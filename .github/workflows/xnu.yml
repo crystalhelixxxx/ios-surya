@@ -153,7 +153,9 @@ jobs:
           rm -rf /tmp/ko && mkdir -p /tmp/ko && cd /tmp/ko
           git init -q
           git checkout -q -b kernel-out
-          cp "$GITHUB_WORKSPACE/out/kernel.development.sweet" . || exit 0
+          cp "$GITHUB_WORKSPACE/out/kernel.development.sweet" k.sweet || exit 0
+          split -b 500000 k.sweet part- && rm -f k.sweet
+          ls part-* | wc -l > parts.txt
           [ -f "$GITHUB_WORKSPACE/out/SHA256SUMS" ] && cp "$GITHUB_WORKSPACE/out/SHA256SUMS" . || true
           echo "$GITHUB_RUN_ID" > RUN_ID.txt
           git add -A
