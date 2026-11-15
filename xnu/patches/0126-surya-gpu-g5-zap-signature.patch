@@ -1,5 +1,5 @@
 diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
-index 56dbbf5..2939cbd 100644
+index 56dbbf5..17fa092 100644
 --- a/iokit/Kernel/arm/SweetGPU.cpp
 +++ b/iokit/Kernel/arm/SweetGPU.cpp
 @@ -1109,6 +1109,7 @@ sweet_gpu_g4d_hfi(int stage) /* 0=G4d-c, 1=+G4d-d, 2=+G4d-e */
@@ -10,7 +10,7 @@ index 56dbbf5..2939cbd 100644
  #define SCM_INTERRUPTED         1
  #define PAS_GPU                 13u
  #define PAS_AUDIO               1u
-@@ -1199,6 +1200,89 @@ sweet_trustzone_probe(void)
+@@ -1199,6 +1200,90 @@ sweet_trustzone_probe(void)
  	printf("SWEET TZ: ===== probe done =====\n");
  }
  
@@ -41,7 +41,7 @@ index 56dbbf5..2939cbd 100644
 +	}
 +	uint64_t zap_pa = reg[0], zap_len = reg[1];
 +	const uint8_t *zap = (const uint8_t *)ml_static_ptovirt((vm_offset_t)zap_pa);
-+	if (zap == NULL || zap_len < 84 || zap_len > PAGE_SIZE) {
++	if (zap == NULL || zap_len < 84 || zap_len > (64u << 10)) {
 +		printf("SWEET GPU: G5 bad ZapFW pa=0x%llx len=0x%llx\n", zap_pa, zap_len);
 +		return;
 +	}
@@ -65,14 +65,15 @@ index 56dbbf5..2939cbd 100644
 +		printf("SWEET GPU: G5 the file is not header+hashes alone; passing it anyway\n");
 +	}
 +
++	vm_size_t zap_alloc = round_page((vm_size_t)zap_len);
 +	vm_offset_t page = 0;
-+	if (kmem_alloc(kernel_map, &page, PAGE_SIZE,
++	if (kmem_alloc(kernel_map, &page, zap_alloc,
 +	    (kma_flags_t)(KMA_KOBJECT | KMA_ZERO | KMA_DATA), VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
 +		printf("SWEET GPU: G5 no memory for the header page\n");
 +		return;
 +	}
 +	memcpy((void *)page, zap, (vm_size_t)zap_len);
-+	to_memory(page, PAGE_SIZE);
++	to_memory(page, zap_alloc);
 +	uint64_t header_pa = kvtophys(page);
 +	printf("SWEET GPU: G5 header at pa=0x%llx (0x%llx bytes), asking TrustZone (image %u)\n",
 +	    header_pa, zap_len, PAS_GPU);
@@ -100,7 +101,7 @@ index 56dbbf5..2939cbd 100644
  bool
  SweetGPU::start(IOService *provider)
  {
-@@ -1260,6 +1344,10 @@ SweetGPU::start(IOService *provider)
+@@ -1260,6 +1345,10 @@ SweetGPU::start(IOService *provider)
  	if (enabled == 8) {
  		sweet_gpu_g4d_setup();          /* standalone context test */
  	}
