@@ -1,5 +1,5 @@
 diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
-index 56dbbf5..3c63eda 100644
+index 56dbbf5..2939cbd 100644
 --- a/iokit/Kernel/arm/SweetGPU.cpp
 +++ b/iokit/Kernel/arm/SweetGPU.cpp
 @@ -1109,6 +1109,7 @@ sweet_gpu_g4d_hfi(int stage) /* 0=G4d-c, 1=+G4d-d, 2=+G4d-e */
@@ -10,7 +10,7 @@ index 56dbbf5..3c63eda 100644
  #define SCM_INTERRUPTED         1
  #define PAS_GPU                 13u
  #define PAS_AUDIO               1u
-@@ -1199,6 +1200,86 @@ sweet_trustzone_probe(void)
+@@ -1199,6 +1200,89 @@ sweet_trustzone_probe(void)
  	printf("SWEET TZ: ===== probe done =====\n");
  }
  
@@ -78,12 +78,15 @@ index 56dbbf5..3c63eda 100644
 +	    header_pa, zap_len, PAS_GPU);
 +
 +	uint64_t answer = ~0ull;
++	/* Linux qcom_scm_pas_init_image: 3 args -- pas_id, buffer, its size --
++	 * with a read-write buffer (type 2 at bit 7). */
++	uint64_t arginfo = (3ull | (2ull << 7));
 +	int32_t rc = sweet_scm("zap header 64-bit fast", SCM_FAST | SCM_64 | SCM_SIP | SCM_PAS_INIT_IMAGE,
-+	    SCM_VALUE_AND_BUFFER, PAS_GPU, header_pa, 0, &answer);
++	    arginfo, PAS_GPU, header_pa, zap_len, &answer);
 +	if (rc != 0 || answer != 0) {
 +		answer = ~0ull;
 +		rc = sweet_scm("zap header 32-bit preemptible", SCM_SIP | SCM_PAS_INIT_IMAGE,
-+		    SCM_VALUE_AND_BUFFER, PAS_GPU, header_pa, 0, &answer);
++		    arginfo, PAS_GPU, header_pa, zap_len, &answer);
 +	}
 +	if (rc == 0 && answer == 0) {
 +		printf("SWEET GPU: G5 *** TRUSTZONE ACCEPTS THE ZAP SHADER'S SIGNATURE ***\n");
@@ -97,7 +100,7 @@ index 56dbbf5..3c63eda 100644
  bool
  SweetGPU::start(IOService *provider)
  {
-@@ -1260,6 +1341,10 @@ SweetGPU::start(IOService *provider)
+@@ -1260,6 +1344,10 @@ SweetGPU::start(IOService *provider)
  	if (enabled == 8) {
  		sweet_gpu_g4d_setup();          /* standalone context test */
  	}
