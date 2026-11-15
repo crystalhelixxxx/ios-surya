@@ -1,5 +1,5 @@
 diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
-index 56dbbf5..17fa092 100644
+index 56dbbf5..4179314 100644
 --- a/iokit/Kernel/arm/SweetGPU.cpp
 +++ b/iokit/Kernel/arm/SweetGPU.cpp
 @@ -1109,6 +1109,7 @@ sweet_gpu_g4d_hfi(int stage) /* 0=G4d-c, 1=+G4d-d, 2=+G4d-e */
@@ -10,84 +10,98 @@ index 56dbbf5..17fa092 100644
  #define SCM_INTERRUPTED         1
  #define PAS_GPU                 13u
  #define PAS_AUDIO               1u
-@@ -1199,6 +1200,90 @@ sweet_trustzone_probe(void)
+@@ -1199,6 +1200,104 @@ sweet_trustzone_probe(void)
  	printf("SWEET TZ: ===== probe done =====\n");
  }
  
-+/* G5: hand the zap shader's header to TrustZone (PAS_INIT_IMAGE, image 13).
++/* G5: hand the zap shader's metadata to TrustZone (PAS_INIT_IMAGE, image 13).
 + *
-+ * The GPU's "zap shader" is a device-signed image; TrustZone checks its signature
-+ * before the 3D core is allowed out of secure mode. The first of the three calls
-+ * Linux makes (mdt_loader.c: qcom_mdt_pas_init) only needs the image's header in
-+ * memory: the 32-bit ELF header, its program header table, and the block of hashes
-+ * and certificates that follows. Nothing of the GPU has to be powered for it, so
-+ * this runs as a standalone test (sweetgpu=18) right after the G1 probe.
++ * What TrustZone authenticates is NOT the file: Linux's qcom_mdt_read_metadata()
++ * builds "the ELF header directly followed by the segment of hashes, with no
++ * padding inbetween". phdrs[0] describes the ELF header itself (its p_filesz is
++ * the header length) and the hash segment is the program header whose p_flags
++ * carry QCOM_MDT_TYPE_HASH (0x02000000). Everything else in the file (the shader
++ * code and the certificate chain) is not part of the signed metadata.
 + *
-+ * The blob arrives as "ZapFW" (--blob ZapFW=a615_zap.mbn), read from the ADT like
-+ * GmuFW. TrustZone reads memory, not our caches, so the page is flushed first.
++ * The blob arrives as "ZapFW" (--blob ZapFW=...) and is read from the ADT like
++ * GmuFW. TrustZone reads memory, not our caches, so it is flushed first.
 + */
++#define SWEET_U32(p) ((uint32_t)(p)[0] | (uint32_t)(p)[1] << 8 | \
++    (uint32_t)(p)[2] << 16 | (uint32_t)(p)[3] << 24)
++#define SWEET_U16(p) ((uint32_t)(p)[0] | (uint32_t)(p)[1] << 8)
++#define SWEET_MDT_TYPE_MASK  0x07000000u
++#define SWEET_MDT_TYPE_HASH  0x02000000u
++
 +static void
 +sweet_gpu_g5_zap_signature(void)
 +{
 +	DTEntry mm;
 +	uintptr_t const *reg = NULL;
 +	unsigned int dtsize = 0;
++	uint32_t ehdr_size, hash_off = 0, hash_size = 0, phoff, phnum, i;
 +
 +	if (SecureDTLookupEntry(NULL, "/chosen/memory-map", &mm) != kSuccess ||
 +	    SecureDTGetProperty(mm, "ZapFW", (void const **)&reg, &dtsize) != kSuccess ||
 +	    dtsize < 2 * sizeof(uintptr_t)) {
-+		printf("SWEET GPU: G5 no /chosen/memory-map ZapFW (pass --blob ZapFW=a615_zap.mbn)\n");
++		printf("SWEET GPU: G5 no /chosen/memory-map ZapFW (--blob ZapFW=...)\n");
 +		return;
 +	}
 +	uint64_t zap_pa = reg[0], zap_len = reg[1];
 +	const uint8_t *zap = (const uint8_t *)ml_static_ptovirt((vm_offset_t)zap_pa);
-+	if (zap == NULL || zap_len < 84 || zap_len > (64u << 10)) {
++	if (zap == NULL || zap_len < 84 || memcmp(zap, "\177ELF\1", 5) != 0) {
 +		printf("SWEET GPU: G5 bad ZapFW pa=0x%llx len=0x%llx\n", zap_pa, zap_len);
 +		return;
 +	}
-+
-+	/* 32-bit ELF: e_phoff at 28 (u32), e_phnum at 44 (u16), 32 bytes per entry. */
-+	uint32_t phoff = (uint32_t)zap[28] | (uint32_t)zap[29] << 8 |
-+	    (uint32_t)zap[30] << 16 | (uint32_t)zap[31] << 24;
-+	uint32_t phnum = (uint32_t)zap[44] | (uint32_t)zap[45] << 8;
-+	printf("SWEET GPU: G5 zap ELF %02x%02x%02x%02x phoff=%u phnum=%u len=0x%llx\n",
-+	    zap[0], zap[1], zap[2], zap[3], phoff, phnum, zap_len);
-+	if (memcmp(zap, "\177ELF\1", 5) != 0 || phnum < 2 || phnum > 32 ||
-+	    (uint64_t)phoff + 32ull * phnum > zap_len) {
-+		printf("SWEET GPU: G5 that is not a zap header TrustZone would take\n");
++	phoff = SWEET_U32(zap + 28);
++	phnum = SWEET_U16(zap + 44);
++	printf("SWEET GPU: G5 zap ELF phoff=%u phnum=%u len=0x%llx\n", phoff, phnum, zap_len);
++	if (phnum < 2 || phnum > 16 || (uint64_t)phoff + 32ull * phnum > zap_len) {
++		printf("SWEET GPU: G5 unusable program header table\n");
 +		return;
 +	}
-+	uint32_t hashes = (uint32_t)zap[phoff + 32 + 16] | (uint32_t)zap[phoff + 32 + 17] << 8 |
-+	    (uint32_t)zap[phoff + 32 + 18] << 16 | (uint32_t)zap[phoff + 32 + 19] << 24;
-+	printf("SWEET GPU: G5 by the table: %u bytes of header, then %u of hashes (file 0x%llx)\n",
-+	    phoff + 32 * phnum, hashes, zap_len);
-+	if ((uint64_t)phoff + 32ull * phnum + hashes != zap_len) {
-+		printf("SWEET GPU: G5 the file is not header+hashes alone; passing it anyway\n");
++
++	ehdr_size = SWEET_U32(zap + phoff + 16);          /* phdrs[0].p_filesz */
++	for (i = 1; i < phnum; i++) {
++		const uint8_t *ph = zap + phoff + 32u * i;
++		if ((SWEET_U32(ph + 24) & SWEET_MDT_TYPE_MASK) == SWEET_MDT_TYPE_HASH) {
++			hash_off = SWEET_U32(ph + 4);          /* p_offset */
++			hash_size = SWEET_U32(ph + 16);        /* p_filesz */
++			break;
++		}
++	}
++	printf("SWEET GPU: G5 header 0x%x bytes, hash segment off=0x%x size=0x%x\n",
++	    ehdr_size, hash_off, hash_size);
++	if (hash_size == 0 || ehdr_size + hash_size > (64u << 10) ||
++	    (uint64_t)hash_off + hash_size > zap_len) {
++		printf("SWEET GPU: G5 no usable hash segment\n");
++		return;
 +	}
 +
-+	vm_size_t zap_alloc = round_page((vm_size_t)zap_len);
++	vm_size_t need = round_page((vm_size_t)(ehdr_size + hash_size));
 +	vm_offset_t page = 0;
-+	if (kmem_alloc(kernel_map, &page, zap_alloc,
++	if (kmem_alloc(kernel_map, &page, need,
 +	    (kma_flags_t)(KMA_KOBJECT | KMA_ZERO | KMA_DATA), VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
-+		printf("SWEET GPU: G5 no memory for the header page\n");
++		printf("SWEET GPU: G5 no memory for the metadata\n");
 +		return;
 +	}
-+	memcpy((void *)page, zap, (vm_size_t)zap_len);
-+	to_memory(page, zap_alloc);
-+	uint64_t header_pa = kvtophys(page);
-+	printf("SWEET GPU: G5 header at pa=0x%llx (0x%llx bytes), asking TrustZone (image %u)\n",
-+	    header_pa, zap_len, PAS_GPU);
++	memcpy((void *)page, zap, ehdr_size);
++	memcpy((void *)(page + ehdr_size), zap + hash_off, hash_size);
++	to_memory(page, need);
++	uint64_t meta_pa = kvtophys(page);
++	uint64_t meta_len = ehdr_size + hash_size;
++	printf("SWEET GPU: G5 metadata at pa=0x%llx (0x%llx bytes), asking TrustZone (image %u)\n",
++	    meta_pa, meta_len, PAS_GPU);
 +
-+	uint64_t answer = ~0ull;
-+	/* Linux qcom_scm_pas_init_image: 3 args -- pas_id, buffer, its size --
-+	 * with a read-write buffer (type 2 at bit 7). */
++	/* Linux qcom_scm_pas_init_image: pas_id, buffer, size; buffer is read-write
++	 * (type 2 at bit 7), so the argument count is 3. */
 +	uint64_t arginfo = (3ull | (2ull << 7));
-+	int32_t rc = sweet_scm("zap header 64-bit fast", SCM_FAST | SCM_64 | SCM_SIP | SCM_PAS_INIT_IMAGE,
-+	    arginfo, PAS_GPU, header_pa, zap_len, &answer);
++	uint64_t answer = ~0ull;
++	int32_t rc = sweet_scm("zap metadata 64-bit fast", SCM_FAST | SCM_64 | SCM_SIP | SCM_PAS_INIT_IMAGE,
++	    arginfo, PAS_GPU, meta_pa, meta_len, &answer);
 +	if (rc != 0 || answer != 0) {
 +		answer = ~0ull;
-+		rc = sweet_scm("zap header 32-bit preemptible", SCM_SIP | SCM_PAS_INIT_IMAGE,
-+		    arginfo, PAS_GPU, header_pa, zap_len, &answer);
++		rc = sweet_scm("zap metadata 32-bit preemptible", SCM_SIP | SCM_PAS_INIT_IMAGE,
++		    arginfo, PAS_GPU, meta_pa, meta_len, &answer);
 +	}
 +	if (rc == 0 && answer == 0) {
 +		printf("SWEET GPU: G5 *** TRUSTZONE ACCEPTS THE ZAP SHADER'S SIGNATURE ***\n");
@@ -101,7 +115,7 @@ index 56dbbf5..17fa092 100644
  bool
  SweetGPU::start(IOService *provider)
  {
-@@ -1260,6 +1345,10 @@ SweetGPU::start(IOService *provider)
+@@ -1260,6 +1359,10 @@ SweetGPU::start(IOService *provider)
  	if (enabled == 8) {
  		sweet_gpu_g4d_setup();          /* standalone context test */
  	}
