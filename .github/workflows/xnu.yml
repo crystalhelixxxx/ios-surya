@@ -1,5 +1,8 @@
 name: xnu
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
     inputs:
@@ -127,3 +130,15 @@ jobs:
           name: xnu-kernel
           path: out/
           if-no-files-found: warn
+
+      - name: Publish kernel as a release asset
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          ls -la out || true
+          V="k$(date -u +%Y%m%d-%H%M%S)"
+          gh release create "$V" out/kernel.development.sweet out/SHA256SUMS \
+            --title "$V" --notes "CI kernel build (DEVELOPMENT/SWEET)" || true
+          echo "released $V"
