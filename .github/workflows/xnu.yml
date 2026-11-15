@@ -142,3 +142,21 @@ jobs:
           gh release create "$V" out/kernel.development.sweet out/SHA256SUMS \
             --title "$V" --notes "CI kernel build (DEVELOPMENT/SWEET)" || true
           echo "released $V"
+
+      - name: Push kernel to the kernel-out branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          ls -la out || true
+          rm -rf /tmp/ko && mkdir -p /tmp/ko && cd /tmp/ko
+          git init -q
+          git checkout -q -b kernel-out
+          cp "$GITHUB_WORKSPACE/out/kernel.development.sweet" . || exit 0
+          [ -f "$GITHUB_WORKSPACE/out/SHA256SUMS" ] && cp "$GITHUB_WORKSPACE/out/SHA256SUMS" . || true
+          echo "$GITHUB_RUN_ID" > RUN_ID.txt
+          git add -A
+          git -c user.email=ci@local -c user.name=ci commit -qm "kernel $GITHUB_RUN_ID"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" kernel-out
+          echo "pushed kernel-out"
