@@ -1,0 +1,52 @@
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index b6c1a41..c5eada5 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -73,6 +73,39 @@ usb_rd(vm_offset_t base, uint32_t off)
+ 	return v;
+ }
+ 
++
++/*
++ * The QUSB2 PHY can be left in block reset by the bootloader; on surya it is
++ * (its registers then read back as garbage, patterns like 0x64646464, and
++ * every DWC3 endpoint command times out). Deassert GCC_QUSB2PHY_PRIM_BCR
++ * (gcc-sm7150: GCC + 0x26000, bit 0 is the reset, bit 1 says it is done)
++ * before the device controller is touched. On sweet the bootloader had
++ * already done this, which is why it was never needed here before.
++ */
++#define GCC_QUSB2PHY_PRIM_BCR   0x26000
++
++static void
++usb_phy_out_of_reset(vm_offset_t gcc)
++{
++	uint32_t v = usb_rd(gcc, GCC_QUSB2PHY_PRIM_BCR);
++
++	if (!(v & 1u)) {
++		printf("SWEET USB: QUSB2 PHY already out of reset (BCR 0x%08x)\n", v);
++		return;
++	}
++	printf("SWEET USB: QUSB2 PHY is in block reset (BCR 0x%08x), releasing\n", v);
++	*(volatile uint32_t *)(gcc + GCC_QUSB2PHY_PRIM_BCR) = 0;
++	__asm__ volatile ("dmb oshld" ::: "memory");
++	for (int i = 0; i < 2000; i++) {
++		v = usb_rd(gcc, GCC_QUSB2PHY_PRIM_BCR);
++		if (v & 2u) {
++			break;
++		}
++	}
++	printf("SWEET USB: QUSB2 PHY BCR 0x%08x after (%s)\n", v,
++	    (v & 2u) ? "reset done" : "STILL IN RESET");
++}
++
+ void
+ sweet_usb_probe(void)
+ {
+@@ -103,6 +136,7 @@ sweet_usb_probe(void)
+ 		printf("SWEET USB: controller unpowered or unclocked; DWC3 not read\n");
+ 		return;
+ 	}
++	usb_phy_out_of_reset(gcc);
+ 	vm_offset_t dwc = ml_io_map(DWC3_PA, DWC3_SIZE);
+ 	if (dwc == 0) {
+ 		printf("SWEET USB: DWC3 map failed\n");
